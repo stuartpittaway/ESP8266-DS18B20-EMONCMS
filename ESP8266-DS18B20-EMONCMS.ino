@@ -308,7 +308,7 @@ void setupAccessPoint(void) {
 void handleSupplyReadings() {
   String s;
   s = htmlHeader();
-  s += F("<h2>ESP8266 TEMPERATURE MONITOR</h2><table>");
+  s += F("<table border=1><tr><th>Chip serial number</th><th>Reading (oC)</th></tr>");
 
   for (int i = 0; i < ds18Count; i++ ) {
 
