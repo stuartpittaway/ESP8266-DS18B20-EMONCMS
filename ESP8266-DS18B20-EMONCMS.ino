@@ -231,7 +231,7 @@ void handleSave() {
 
     WriteConfigToEEPROM();
 
-    s = htmlHeader() + F("<p>WIFI settings saved, will reboot in a few seconds.</p>") + htmlFooter();
+    s = htmlHeader() + F("<p>Settings saved, will reboot in a few seconds.</p>") + htmlFooter();
     sendHeaders();
     server.send(200, "text/html", s);
 
