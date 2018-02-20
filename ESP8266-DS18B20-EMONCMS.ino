@@ -315,8 +315,7 @@ void setup() {
 
   Serial.begin(19200);           // start serial for output
   Serial.println();
-  Serial.setDebugOutput(true);
-
+  //Serial.setDebugOutput(true);
 
   Serial.println(F("ESP8266 DS18B20 temperature module"));
 
