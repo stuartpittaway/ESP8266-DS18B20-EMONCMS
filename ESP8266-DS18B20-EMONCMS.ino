@@ -45,6 +45,8 @@ extern "C"
 #include "user_interface.h"
 }
 
+#define INTERVAL_BETWEEN_READINGS_MS 30000
+
 #define TEMPERATURE_PRECISION 9
 #define MAXIMUM_NUM_SENSORS 20
 
@@ -231,15 +233,15 @@ void handleSave() {
 
     WriteConfigToEEPROM();
 
-    s = htmlHeader() + F("<p>Settings saved, will reboot in a few seconds.</p>") + htmlFooter();
+    s = htmlHeader() + F("<p>Settings saved, please reboot ESP8266 device</p>") + htmlFooter();
     sendHeaders();
     server.send(200, "text/html", s);
 
-    for (int i = 0; i < 20; i++) {
+    while (1) {
       delay(250);
       yield();
     }
-    ESP.restart();
+    //ESP.restart();
 
   } else {
     s = htmlHeader() + F("<p>WIFI settings too long.</p>") + htmlFooter();
@@ -313,6 +315,8 @@ void setup() {
 
   Serial.begin(19200);           // start serial for output
   Serial.println();
+  Serial.setDebugOutput(true);
+
 
   Serial.println(F("ESP8266 DS18B20 temperature module"));
 
@@ -339,15 +343,6 @@ void setup() {
     setupAccessPoint();
   }
 
-  //TODO: We need a timeout here in case the AP is dead!
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(250);
-    Serial.print( WiFi.status() );
-  }
-  Serial.print(F(". Connected IP:"));
-  Serial.println(WiFi.localIP());
-
   //Scan for DS18 modules...
   oneWire.reset_search();
 
@@ -370,11 +365,29 @@ void setup() {
   Serial.print(ds18Count);
   Serial.println(" temp sensors.");
 
+
+  //TODO: We need a timeout here in case the AP is dead!
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(250);
+    Serial.print( WiFi.status() );
+  }
+  Serial.print(F(". Connected IP:"));
+  Serial.println(WiFi.localIP());
+
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  MDNS.addService("http", "tcp", 80);
+
+
   //Ensure we service the cell modules every 30 seconds
   os_timer_setfn(&myTimer, timerCallback, NULL);
-  os_timer_arm(&myTimer, 10000, true);
+  os_timer_arm(&myTimer, INTERVAL_BETWEEN_READINGS_MS, true);
 
   LED_OFF;
+
+  Serial.println("setup finished");
 }
 
 
@@ -389,21 +402,22 @@ void printAddress(DeviceAddress deviceAddress)
   }
 }
 
+String url = "";
+volatile bool readyToTransmit = false;
+unsigned long next_submit;
+
 void timerCallback(void *pArg) {
   LED_ON;
 
-  if (ds18Count > 0) {
+  if (ds18Count > 0 && readyToTransmit == false) {
     // call sensors.requestTemperatures() to issue a global temperature request to all devices on the bus
     sensors.requestTemperatures(); // Send the command to get temperatures
 
-    String url = myConfig.emoncms_url;
+    url = myConfig.emoncms_url;
 
     url += "?node=" + String(myConfig.emoncms_node) + "&fulljson={";
 
     for (int i = 0; i < ds18Count; i++ ) {
-
-      //printAddress(deviceAddress[i]);
-
       float t = sensors.getTempC(deviceAddress[i]);
 
       //Only output for sensors still connected...
@@ -427,6 +441,32 @@ void timerCallback(void *pArg) {
     }
 
     url += "}&apikey=" + String(myConfig.emoncms_apikey);
+    readyToTransmit = true;
+  }
+
+  LED_OFF;
+}
+
+
+void loop() {
+  //Loop does nothing - its all in the timer...
+  server.handleClient();
+  yield();
+  delay(150);
+  server.handleClient();
+  yield();
+  delay(150);
+  server.handleClient();
+
+  //ESP.deepSleep(SLEEP_DELAY_IN_SECONDS * 1000000, WAKE_RF_DEFAULT);
+  //ESP.deepSleep(10 * 1000, WAKE_NO_RFCAL);
+  //delay(500);   // wait for deep sleep to happen
+
+  if (readyToTransmit && myConfig.emoncms_enabled && (millis() > next_submit) && (WiFi.status() == WL_CONNECTED)) {
+
+    Serial.println(F("About to upload to emoncms..."));
+    //Update emoncms every 30 seconds
+    next_submit = millis() + INTERVAL_BETWEEN_READINGS_MS;
 
     Serial.println(myConfig.emoncms_host);
     Serial.println(myConfig.emoncms_httpPort);
@@ -441,7 +481,7 @@ void timerCallback(void *pArg) {
       // This will send the request to the server
       client.print(String("GET ") + url + " HTTP/1.1\r\nHost: " + myConfig.emoncms_host + "\r\nConnection: close\r\n\r\n");
 
-      unsigned long timeout = millis() + 3500;
+      unsigned long timeout = millis() + 2500;
       // Read all the lines of the reply from server and print them to Serial
       while (client.connected())
       {
@@ -461,21 +501,7 @@ void timerCallback(void *pArg) {
       }
       client.stop();
     }
+
+    readyToTransmit = false;
   }
-
-  LED_OFF;
-}
-
-void loop() {
-  //Loop does nothing - its all in the timer...
-  yield();
-  delay(150);
-
-  server.handleClient();
-  yield();
-  delay(250);
-
-  //ESP.deepSleep(SLEEP_DELAY_IN_SECONDS * 1000000, WAKE_RF_DEFAULT);
-  //ESP.deepSleep(10 * 1000, WAKE_NO_RFCAL);
-  //delay(500);   // wait for deep sleep to happen
-}
+}//end loop
