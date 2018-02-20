@@ -77,9 +77,7 @@ DallasTemperature sensors(&oneWire);
 
 // arrays to hold device addresses
 DeviceAddress deviceAddress[MAXIMUM_NUM_SENSORS];
-
-//const byte DNS_PORT = 53;
-//DNSServer dnsServer;
+float lastReading[MAXIMUM_NUM_SENSORS];
 
 uint8_t ds18Count = 0; // Number of DS18xxx Family devices
 os_timer_t myTimer;
@@ -307,6 +305,32 @@ void setupAccessPoint(void) {
   }
 }
 
+void handleSupplyReadings() {
+  String s;
+  s = htmlHeader();
+  s += F("<h2>ESP8266 TEMPERATURE MONITOR</h2><table>");
+
+  for (int i = 0; i < ds18Count; i++ ) {
+
+    s+="<tr><td>";
+
+    for (uint8_t x = 0; x < 8; x++)
+    {
+      // zero pad the address if necessary
+      if (deviceAddress[i][x] < 16) s += "0";
+      s += String(deviceAddress[i][x], HEX);
+    }
+
+    s += "</td><td>"+String(lastReading[i])+"</td>";
+
+    s+="</tr>";
+  }
+
+  s +="</table>";
+  s += htmlFooter();
+  sendHeaders();
+  server.send(200, "text/html", s);
+}
 
 void setup() {
   // put your setup code here, to run once:
@@ -374,11 +398,11 @@ void setup() {
   Serial.print(F(". Connected IP:"));
   Serial.println(WiFi.localIP());
 
+  server.on("/", HTTP_GET, handleSupplyReadings);
   server.onNotFound(handleNotFound);
 
   server.begin();
   MDNS.addService("http", "tcp", 80);
-
 
   //Ensure we service the cell modules every 30 seconds
   os_timer_setfn(&myTimer, timerCallback, NULL);
@@ -388,7 +412,6 @@ void setup() {
 
   Serial.println("setup finished");
 }
-
 
 // function to print a device address
 void printAddress(DeviceAddress deviceAddress)
@@ -419,8 +442,11 @@ void timerCallback(void *pArg) {
     for (int i = 0; i < ds18Count; i++ ) {
       float t = sensors.getTempC(deviceAddress[i]);
 
+      lastReading[i] = t;
+
       //Only output for sensors still connected...
       if (t != DEVICE_DISCONNECTED_C && t != DEVICE_DISCONNECTED_RAW) {
+
 
         url += "\"" ;
         //TODO: THERE MUST BE A BETTER WAY THAN THIS!
