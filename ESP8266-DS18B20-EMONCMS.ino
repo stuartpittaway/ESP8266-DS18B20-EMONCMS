@@ -493,9 +493,9 @@ void loop() {
     //Update emoncms every 30 seconds
     next_submit = millis() + INTERVAL_BETWEEN_READINGS_MS;
 
-    Serial.println(myConfig.emoncms_host);
-    Serial.println(myConfig.emoncms_httpPort);
-    Serial.println(url);
+    //Serial.println(myConfig.emoncms_host);
+    //Serial.println(myConfig.emoncms_httpPort);
+    //Serial.println(url);
 
     WiFiClient client;
 
