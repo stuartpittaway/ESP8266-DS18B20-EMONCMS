@@ -22,7 +22,9 @@
   It is designed to detect DS18B20 temperature sensors/probes connected to the ESP8266, regularly read these
   and transmit the reading to Open Energy Monitor (emoncms)
 
-  This code is provided as-is without warranty of any kind
+  This code is provided as-is without warranty of any kind.
+
+  Note that there are likely to be buffer overflow vulnerabilities on the web form submission - no checks are done on the validity of the data
 
   Setting up ESP-8266-12E (NODE MCU 1.0) on Arduino
   http://www.instructables.com/id/Programming-a-HTTP-Server-on-ESP-8266-12E/
@@ -40,20 +42,29 @@
   - Pull PIN D5 to GND and power on/reset to force factory reset
 
 */
+
 extern "C"
 {
+  //This is part of the Ardunio ESP8266 library
 #include "user_interface.h"
 }
 
+
+//30 second interval
 #define INTERVAL_BETWEEN_READINGS_MS 30000
 
-#define TEMPERATURE_PRECISION 9
-#define MAXIMUM_NUM_SENSORS 20
+#define TEMPERATURE_PRECISION 10
+#define MAXIMUM_NUM_SENSORS 16
 
+//Pin to find i2c devices
 #define ONE_WIRE_BUS            D6      // DS18B20 pin
 
+// LED Pin
 #define LED_PIN D4
+
+// Switch PIN (pull to ground to switch on)
 #define FACTORY_RESET_PIN D5
+
 #define LED_ON digitalWrite(LED_PIN, LOW)
 #define LED_OFF digitalWrite(LED_PIN, HIGH)
 
@@ -69,9 +80,11 @@ extern "C"
 #include <DallasTemperature.h>
 #include <OneWire.h>
 
+// https://arduinojson.org
+#include <ArduinoJson.h>
+
 ESP8266WebServer server(80);
 
-//#define ONE_WIRE_BUS 2  // DS18B20 pin
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
@@ -131,11 +144,12 @@ void handleRoot()
   s += F("</select>");
   s += F("<div><label for=\"pass\">Password:</label><input type=\"password\" id=\"id\" name=\"pass\"></div>");
   s += F("<h3>emonCMS connection details</h3>");
+  s += "<div><label for=\"emoncms_enabled\">Enabled:</label><input id=\"emoncms_enabled\" name=\"emoncms_enabled\" type=\"checkbox\" value=\"1\" " + String(myConfig.emoncms_enabled ? "checked=\"\"" : "") + "  /></div>";
   s += "<div><label for=\"emoncms_host\">Host:</label><input id=\"emoncms_host\" name=\"emoncms_host\" size=\"32\" type=\"text\" value=\"" + String(myConfig.emoncms_host) + "\"/></div>";
   s += "<div><label for=\"emoncms_httpPort\">HTTP Port:</label><input min=\"1\" max=\"65535\" id=\"emoncms_httpPort\" name=\"emoncms_httpPort\" size=\"40\" type=\"number\"  value=\"" + String(myConfig.emoncms_httpPort) + "\"/></div>";
   s += "<div><label for=\"emoncms_node\">Node number:</label><input min=\"1\" max=\"1024\" id=\"emoncms_node\" name=\"emoncms_node\" size=\"40\" type=\"number\"  value=\"" + String(myConfig.emoncms_node) + "\"/></div>";
   s += "<div><label for=\"emoncms_url\">URI:</label><input id=\"emoncms_url\" name=\"emoncms_url\" size=\"32\" type=\"text\"  value=\"" + String(myConfig.emoncms_url) + "\"/></div>";
-  s += F("<div><label for=\"emoncms_apikey\">API key:</label><input id=\"emoncms_apikey\" name=\"emoncms_apikey\" size=\"32\" type=\"text\" /></div>");
+  s += "<div><label for=\"emoncms_apikey\">API key:</label><input id=\"emoncms_apikey\" type=\"password\" name=\"emoncms_apikey\" size=\"32\" type=\"text\" value=\"" + String(myConfig.emoncms_apikey) + "\"/></div>";
   s += F("<input  type=\"submit\" value=\"Submit\"></form>");
   s += htmlFooter();
 
@@ -221,7 +235,7 @@ void handleSave() {
     ssid.toCharArray(myConfig.wifi_ssid, sizeof(myConfig.wifi_ssid));
     password.toCharArray(myConfig.wifi_passphrase, sizeof(myConfig.wifi_passphrase));
 
-    myConfig.emoncms_enabled = true;  //(server.arg("emoncms_enabled").toInt() == 1) ? true : false;
+    myConfig.emoncms_enabled = (server.arg("emoncms_enabled").toInt() == 1) ? true : false;
     myConfig.emoncms_node = server.arg("emoncms_node").toInt();
     myConfig.emoncms_httpPort = server.arg("emoncms_httpPort").toInt();
 
@@ -305,6 +319,51 @@ void setupAccessPoint(void) {
   }
 }
 
+void handleSupplyReadingsJSON() {
+  //You can call this web page "/json" from a browser to return the JSON value of the latest readings
+  String s="";
+
+  //May need to increase this for large data sets with lots of temperature readings
+  StaticJsonBuffer<512> jsonBuffer;
+  JsonObject& data = jsonBuffer.createObject();
+
+  for (int i = 0; i < ds18Count; i++ ) {   
+    float t=lastReading[i]; 
+    if (t != DEVICE_DISCONNECTED_C && t != DEVICE_DISCONNECTED_RAW) {
+      data[GetDeviceAddressAsString(deviceAddress[i])] = t;
+    } else {
+      //Error - null value
+      data[GetDeviceAddressAsString(deviceAddress[i])] = (char*)0; // or (char*)NULL if you prefer
+    }
+  }
+
+  data.printTo(s);
+
+  //Release memory
+  jsonBuffer.clear();
+
+  sendHeaders();
+  server.send(200, "application/json", s);
+}
+
+
+String GetDeviceAddressAsString(DeviceAddress a) {
+
+  String address = "";
+  //TODO: THERE MUST BE A BETTER WAY THAN THIS!
+  for (uint8_t x = 0; x < 8; x++)
+  {
+    // zero pad the address if necessary
+    if (a[x] < 16) address += "0";
+
+    address += String(a[x], HEX);
+  }
+
+  return address;
+}
+
+
+
 void handleSupplyReadings() {
   String s;
   s = htmlHeader();
@@ -312,25 +371,64 @@ void handleSupplyReadings() {
 
   for (int i = 0; i < ds18Count; i++ ) {
 
-    s+="<tr><td>";
+    s += "<tr><td>";
 
-    for (uint8_t x = 0; x < 8; x++)
-    {
-      // zero pad the address if necessary
-      if (deviceAddress[i][x] < 16) s += "0";
-      s += String(deviceAddress[i][x], HEX);
-    }
+    s += GetDeviceAddressAsString(deviceAddress[i]);
 
-    s += "</td><td>"+String(lastReading[i])+"</td>";
+    s += "</td><td>" + String(lastReading[i]) + "</td>";
 
-    s+="</tr>";
+    s += "</tr>";
   }
 
-  s +="</table>";
+  s += "</table>";
   s += htmlFooter();
   sendHeaders();
   server.send(200, "text/html", s);
 }
+
+
+
+volatile bool readyToTransmit = false;
+
+String jsonPayload = "";
+
+
+void timerCallback(void *pArg) {
+  LED_ON;
+
+  //Only run if there are sensors and we have an empty buffer
+  if (ds18Count > 0 && readyToTransmit == false) {
+
+    //May need to increase this for large data sets with lots of temperature readings
+    StaticJsonBuffer<512> jsonBuffer;
+    JsonObject& data = jsonBuffer.createObject();
+
+    sensors.requestTemperatures(); // Send the command to get temperatures
+
+    for (int i = 0; i < ds18Count; i++ ) {
+      float t = sensors.getTempC(deviceAddress[i]);
+
+      lastReading[i] = t;
+
+      //Only output for sensors still connected...
+      if (t != DEVICE_DISCONNECTED_C && t != DEVICE_DISCONNECTED_RAW) {
+        //Create the JSON object
+        data[GetDeviceAddressAsString(deviceAddress[i])] = t;
+      }
+    }
+
+    jsonPayload = "";
+    data.printTo(jsonPayload);
+
+    //Release memory
+    jsonBuffer.clear();
+
+    readyToTransmit = true;
+  }
+
+  LED_OFF;
+}
+
 
 void setup() {
   // put your setup code here, to run once:
@@ -377,7 +475,9 @@ void setup() {
         memcpy(&deviceAddress[ds18Count], &scanAddress, sizeof(scanAddress));
         sensors.setResolution(deviceAddress[ds18Count], TEMPERATURE_PRECISION, false);
 
-        printAddress(deviceAddress[ds18Count]);
+        Serial.println(GetDeviceAddressAsString(deviceAddress[ds18Count]));
+
+
         Serial.println();
         ds18Count++;
       }
@@ -399,6 +499,7 @@ void setup() {
   Serial.println(WiFi.localIP());
 
   server.on("/", HTTP_GET, handleSupplyReadings);
+  server.on("/json", HTTP_GET, handleSupplyReadingsJSON);
   server.onNotFound(handleNotFound);
 
   server.begin();
@@ -413,68 +514,9 @@ void setup() {
   Serial.println("setup finished");
 }
 
-// function to print a device address
-void printAddress(DeviceAddress deviceAddress)
-{
-  for (uint8_t i = 0; i < 8; i++)
-  {
-    // zero pad the address if necessary
-    if (deviceAddress[i] < 16) Serial.print("0");
-    Serial.print(deviceAddress[i], HEX);
-  }
-}
-
-String url = "";
-volatile bool readyToTransmit = false;
-unsigned long next_submit;
-
-void timerCallback(void *pArg) {
-  LED_ON;
-
-  if (ds18Count > 0 && readyToTransmit == false) {
-    // call sensors.requestTemperatures() to issue a global temperature request to all devices on the bus
-    sensors.requestTemperatures(); // Send the command to get temperatures
-
-    url = myConfig.emoncms_url;
-
-    url += "?node=" + String(myConfig.emoncms_node) + "&fulljson={";
-
-    for (int i = 0; i < ds18Count; i++ ) {
-      float t = sensors.getTempC(deviceAddress[i]);
-
-      lastReading[i] = t;
-
-      //Only output for sensors still connected...
-      if (t != DEVICE_DISCONNECTED_C && t != DEVICE_DISCONNECTED_RAW) {
-
-
-        url += "\"" ;
-        //TODO: THERE MUST BE A BETTER WAY THAN THIS!
-        for (uint8_t x = 0; x < 8; x++)
-        {
-          // zero pad the address if necessary
-          if (deviceAddress[i][x] < 16) url += "0";
-          url += String(deviceAddress[i][x], HEX);
-        }
-
-        url += "\":" + String( t );
-
-        if (i < ds18Count - 1) {
-          url += ",";
-        }
-      }
-    }
-
-    url += "}&apikey=" + String(myConfig.emoncms_apikey);
-    readyToTransmit = true;
-  }
-
-  LED_OFF;
-}
-
 
 void loop() {
-  //Loop does nothing - its all in the timer...
+  //Handle any wifi events
   server.handleClient();
   yield();
   delay(150);
@@ -483,19 +525,10 @@ void loop() {
   delay(150);
   server.handleClient();
 
-  //ESP.deepSleep(SLEEP_DELAY_IN_SECONDS * 1000000, WAKE_RF_DEFAULT);
-  //ESP.deepSleep(10 * 1000, WAKE_NO_RFCAL);
-  //delay(500);   // wait for deep sleep to happen
 
-  if (readyToTransmit && myConfig.emoncms_enabled && (millis() > next_submit) && (WiFi.status() == WL_CONNECTED)) {
+  if (readyToTransmit && myConfig.emoncms_enabled  && (WiFi.status() == WL_CONNECTED)) {
 
     Serial.println(F("About to upload to emoncms..."));
-    //Update emoncms every 30 seconds
-    next_submit = millis() + INTERVAL_BETWEEN_READINGS_MS;
-
-    //Serial.println(myConfig.emoncms_host);
-    //Serial.println(myConfig.emoncms_httpPort);
-    //Serial.println(url);
 
     WiFiClient client;
 
@@ -503,10 +536,26 @@ void loop() {
       Serial.println("connection failed");
 
     } else {
-      // This will send the request to the server
-      client.print(String("GET ") + url + " HTTP/1.1\r\nHost: " + myConfig.emoncms_host + "\r\nConnection: close\r\n\r\n");
 
+
+      //Debug
+      Serial.println(jsonPayload);
+
+      //NOTE YOU CANNOT PUT WIFI COMMANDS INSIDE THE TIMER CALLBACK...
+      // This will send the request to the server
+      client.print(String("GET ")
+                   + String(myConfig.emoncms_url)
+                   + "?node="
+                   + String(myConfig.emoncms_node)
+                   + "&fulljson=" + jsonPayload
+                   + " HTTP/1.1\r\n"
+                   + "Host: " + myConfig.emoncms_host
+                   + "\r\nConnection: close\r\nAuthorization: Bearer " + String(myConfig.emoncms_apikey)
+                   + "\r\n\r\n");
+
+      //Expect reply within 2.5 seconds
       unsigned long timeout = millis() + 2500;
+
       // Read all the lines of the reply from server and print them to Serial
       while (client.connected())
       {
